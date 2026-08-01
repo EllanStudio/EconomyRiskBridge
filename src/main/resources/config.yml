@@ -1,0 +1,122 @@
+# SHADOW：只记录、不开拦；ENFORCE：命中阻断规则时取消转账。
+# 建议先运行 3-7 天 SHADOW，再根据案件分布调整阈值。
+mode: SHADOW
+# 实服 JVM 当前使用 UTC，和 UltimateShop 的 00:00:00 重置保持一致。
+# 若以后统一改为台北时区，这里也要同步改成 Asia/Taipei。
+time-zone: Etc/UTC
+
+network:
+  # 当前实服有 survival、redstone、spawn 三个共享经济余额的后端，但本插件的风险计数在内存中。
+  # ENFORCE 时只允许一个节点执行转账，避免玩家切服后重复使用每日额度；SHADOW 期间不阻断。
+  single-transfer-node: true
+  # auto 取服务端工作目录名。启动日志和 /erb status 会显示解析结果；若 MCS 工作目录名不同请显式填写。
+  current-node: auto
+  transfer-node: spawn
+
+integrations:
+  ultimate-shop:
+    # 只被动记录卖出完成事件，作为之后审计 /pay 的证据。
+    # 不取消卖出、不限制赚钱、不修改 UltimateShop 本体。
+    enabled: true
+
+interception:
+  # 必须覆盖 ExcellentEconomy 实际启用的所有玩家转账入口。
+  # 字面量不区分大小写；仅支持 {target} 和 {amount} 两个占位符。
+  patterns:
+    - command: "pay {target} {amount}"
+      currency: ellan_coin
+    - command: "ellan_coin pay {target} {amount}"
+      currency: ellan_coin
+  pending-timeout-seconds: 60
+  unknown-target-policy: BLOCK
+
+privacy:
+  # 留空时首次启动自动生成。切勿随意更换，否则历史 IP 关联会失效。
+  ip-hmac-secret: ""
+  ip-link-retention-days: 30
+
+limits:
+  # 统一采用最多 6 位小数；0 表示关闭该项。
+  max-single: "100000"
+  sender-daily: "250000"
+  receiver-daily: "250000"
+  pair-daily: "100000"
+  cluster-daily: "300000"
+  cluster-daily-hard-block: false
+  same-ip-hard-block: false
+  velocity-window-seconds: 60
+  velocity-max-transfers: 8
+  velocity-hard-block: true
+
+profiling:
+  new-account-hours: 24
+  low-playtime-minutes: 120
+  # 试用期内的大额资金，以及资金规模与累计在线时长明显不相称时，强制进入托管复核。
+  probation-playtime-hours: 24
+  probation-large-transfer: "25000"
+  base-earned-capacity: "10000"
+  earned-capacity-per-play-hour: "5000"
+  # 这里的 hard-block 仅表示之后发起的高风险 /pay 进入托管，绝不拦截赚钱入账。
+  source-of-funds-hard-block: true
+  shop-alt-limit-hard-block: true
+  dormant-days: 14
+  dormant-large-transfer: "25000"
+  ip-cluster-accounts: 3
+  ip-churn-count: 4
+  pass-through-ratio: 0.80
+  structuring-min-transfers: 3
+  balance-drain-ratio: 0.90
+  repeated-amount-count: 3
+  behavior-window-seconds: 600
+  fan-in-distinct-senders: 4
+  fan-out-distinct-receivers: 6
+  near-limit-ratio: 0.85
+  round-amount-unit: "10000"
+
+scores:
+  same-recent-ip: 35
+  new-account: 20
+  low-playtime: 15
+  source-of-funds: 40
+  shop-alt-limit: 60
+  dormant-reactivation: 30
+  ip-cluster: 25
+  ip-churn: 15
+  pass-through: 35
+  circular-flow: 40
+  structuring: 35
+  balance-drain: 20
+  repeated-amount: 15
+  high-velocity: 25
+  fan-in: 25
+  fan-out: 20
+  reverse-flow: 25
+  near-limit: 15
+  round-amount: 5
+  review-threshold: 40
+  block-threshold: 80
+
+storage:
+  file: risk-audit.db
+  queue-capacity: 20000
+  batch-size: 256
+  flush-millis: 100
+  retention-days: 180
+  # ENFORCE 下审计队列或数据库失效时是否拒绝新转账。
+  fail-closed: true
+
+notifications:
+  # 玩家只收到错误代码；拥有管理权限的在线 OP 与控制台收到代码对应的具体原因。
+  operator-case-alerts: true
+  console-case-alerts: true
+
+messages:
+  prefix: "&8[&6风控&8] &r"
+  transfer-notice: "&e服务器转账已启用风控：若系统判定可能存在洗钱、绕过限额等行为，金额将由服务器银行托管并等待管理员复核；确认违规后将予以充公。"
+  notice-cooldown-hours: 24
+  blocked: "&c转账已暂缓。错误代码：{code} &7(案件 {case})"
+  escrow-processing: "&e该笔转账触发风险复核，正在提交服务器银行托管。错误代码：{code} &7(案件 {case})"
+  escrow-held: "&e{amount} {currency} 已由服务器银行托管，管理员核查后将放行或处置。错误代码：{code} &7(案件 {case})"
+  audit-unavailable: "&c审计系统繁忙，转账已暂缓。错误代码：ERB-E002"
+  unknown-target: "&c无法安全识别收款玩家。错误代码：ERB-E001"
+  wrong-transfer-node: "&c请前往 {node} 服务器转账。错误代码：ERB-E005"

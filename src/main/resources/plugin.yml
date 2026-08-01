@@ -1,0 +1,23 @@
+name: EconomyRiskBridge
+version: '${revision}'
+main: cn.superiormc.economyriskbridge.EconomyRiskBridgePlugin
+api-version: '1.21'
+authors: [SuperiorMC]
+description: High-performance, explainable transfer risk bridge for ExcellentEconomy.
+depend: [ExcellentEconomy]
+softdepend: [UltimateShop]
+
+commands:
+  economyriskbridge:
+    description: EconomyRiskBridge administration
+    aliases: [erb, riskbridge]
+    usage: /<command> help
+    permission: economyriskbridge.admin
+
+permissions:
+  economyriskbridge.admin:
+    description: Access all EconomyRiskBridge administration commands
+    default: op
+  economyriskbridge.bypass:
+    description: Bypass transfer risk checks
+    default: op

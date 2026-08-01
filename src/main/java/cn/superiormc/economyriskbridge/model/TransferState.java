@@ -1,0 +1,20 @@
+package cn.superiormc.economyriskbridge.model;
+
+public enum TransferState {
+    PENDING,
+    SHADOW_PENDING,
+    BLOCKED,
+    COMMITTED,
+    EXPIRED,
+    PARTIAL,
+    CANCELLED,
+    ESCROW_PREPARED,
+    ESCROW_HELD,
+    ESCROW_RESOLVING_RELEASE,
+    ESCROW_RESOLVING_REFUND,
+    ESCROW_RELEASED,
+    ESCROW_CONFISCATED,
+    ESCROW_REFUNDED,
+    ESCROW_FAILED,
+    ESCROW_NEEDS_RECONCILIATION
+}
