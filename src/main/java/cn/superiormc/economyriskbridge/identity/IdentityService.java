@@ -9,6 +9,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -27,6 +28,8 @@ import java.util.logging.Logger;
 
 public final class IdentityService {
 
+    private static final int LINKED_PROFILE_COUNT_CAP = 256;
+
     private final AuditStore store;
     private final Logger logger;
     private final long retentionMillis;
@@ -36,7 +39,9 @@ public final class IdentityService {
     private final Map<String, Set<UUID>> playersByIp = new HashMap<>();
     private final Set<PairKey> trustedPairs = new HashSet<>();
     private final Map<UUID, String> confirmedClusters = new HashMap<>();
+    private final ArrayDeque<UUID> maintenanceQueue = new ArrayDeque<>();
     private final AtomicLong lastQueueWarning = new AtomicLong();
+    private long nextMaintenanceSweepMillis;
 
     public IdentityService(String encodedSecret, int retentionDays, AuditStore store, Logger logger) {
         byte[] secret;
@@ -150,7 +155,12 @@ public final class IdentityService {
         return Optional.ofNullable(this.names.get(name.toLowerCase(Locale.ROOT)));
     }
 
-    public synchronized PartyProfile profile(UUID playerId, String fallbackName, long nowMillis) {
+    public PartyProfile profile(UUID playerId, String fallbackName, long nowMillis) {
+        return profile(playerId, fallbackName, nowMillis, LINKED_PROFILE_COUNT_CAP);
+    }
+
+    public synchronized PartyProfile profile(UUID playerId, String fallbackName, long nowMillis,
+                                             int maximumLinkedAccounts) {
         ProfileData profile = this.profiles.get(playerId);
         if (profile == null) {
             return new PartyProfile(playerId, fallbackName, nowMillis, 0L, 0L, "uuid:" + playerId, "", 0, 0);
@@ -164,7 +174,8 @@ public final class IdentityService {
         } else {
             cluster = "confirmed:" + cluster;
         }
-        Set<UUID> linked = linkedIds(playerId, profile, nowMillis - this.retentionMillis);
+        Set<UUID> linked = linkedIds(playerId, profile, nowMillis - this.retentionMillis,
+            Math.max(0, maximumLinkedAccounts));
         return new PartyProfile(playerId, profile.name == null ? fallbackName : profile.name,
             profile.firstSeen, profile.previousSeen, profile.playSeconds, cluster, mostRecentIp,
             profile.ipLastSeen.size(), linked.size());
@@ -194,7 +205,7 @@ public final class IdentityService {
             return List.of();
         }
         long cutoff = nowMillis - this.retentionMillis;
-        Set<UUID> linked = linkedIds(playerId, profile, cutoff);
+        Set<UUID> linked = linkedIds(playerId, profile, cutoff, LINKED_PROFILE_COUNT_CAP);
         return linked.stream().map(id -> profile(id, id.toString(), nowMillis))
             .sorted(Comparator.comparing(PartyProfile::name, String.CASE_INSENSITIVE_ORDER)).toList();
     }
@@ -236,6 +247,38 @@ public final class IdentityService {
         return true;
     }
 
+    public synchronized void maintenance(long nowMillis, int maximumProfiles) {
+        if (maximumProfiles <= 0) {
+            return;
+        }
+        if (this.maintenanceQueue.isEmpty()) {
+            if (nowMillis < this.nextMaintenanceSweepMillis) {
+                return;
+            }
+            this.maintenanceQueue.addAll(this.profiles.keySet());
+            this.nextMaintenanceSweepMillis = nowMillis + 3_600_000L;
+        }
+        long cutoff = nowMillis - this.retentionMillis;
+        for (int index = 0; index < maximumProfiles; index++) {
+            UUID playerId = this.maintenanceQueue.pollFirst();
+            if (playerId == null) {
+                break;
+            }
+            ProfileData profile = this.profiles.get(playerId);
+            if (profile == null) {
+                continue;
+            }
+            pruneProfile(profile, cutoff);
+            if (profile.lastSeen >= cutoff) {
+                continue;
+            }
+            this.profiles.remove(playerId, profile);
+            if (profile.name != null) {
+                this.names.remove(profile.name.toLowerCase(Locale.ROOT), playerId);
+            }
+        }
+    }
+
     private String hash(InetAddress address) {
         Mac mac = this.hmac.get();
         mac.reset();
@@ -271,21 +314,29 @@ public final class IdentityService {
         }
     }
 
-    private Set<UUID> linkedIds(UUID playerId, ProfileData profile, long cutoff) {
+    private Set<UUID> linkedIds(UUID playerId, ProfileData profile, long cutoff, int maximum) {
+        if (maximum <= 0) {
+            return Set.of();
+        }
         Set<UUID> linked = new LinkedHashSet<>();
         for (var entry : profile.ipLastSeen.entrySet()) {
             if (entry.getValue() < cutoff) {
                 continue;
             }
             for (UUID candidate : this.playersByIp.getOrDefault(entry.getKey(), Set.of())) {
+                if (candidate.equals(playerId)) {
+                    continue;
+                }
                 ProfileData candidateProfile = this.profiles.get(candidate);
                 if (candidateProfile != null
                     && candidateProfile.ipLastSeen.getOrDefault(entry.getKey(), 0L) >= cutoff) {
                     linked.add(candidate);
+                    if (linked.size() >= maximum) {
+                        return linked;
+                    }
                 }
             }
         }
-        linked.remove(playerId);
         return linked;
     }
 

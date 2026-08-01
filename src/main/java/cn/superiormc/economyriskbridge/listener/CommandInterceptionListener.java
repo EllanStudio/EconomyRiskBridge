@@ -1,6 +1,7 @@
 package cn.superiormc.economyriskbridge.listener;
 
 import cn.superiormc.economyriskbridge.EconomyRiskBridgePlugin;
+import cn.superiormc.economyriskbridge.command.CommandMatcher;
 import cn.superiormc.economyriskbridge.command.CommandPattern;
 import cn.superiormc.economyriskbridge.config.RiskConfig;
 import cn.superiormc.economyriskbridge.transfer.TransferCoordinator;
@@ -26,15 +27,18 @@ public final class CommandInterceptionListener implements Listener {
     private final Set<PlayerCommandPreprocessEvent> forcedCancellation =
         Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>()));
     private volatile RiskConfig config;
+    private volatile CommandMatcher matcher;
 
     public CommandInterceptionListener(EconomyRiskBridgePlugin plugin, TransferCoordinator coordinator,
                                        RiskConfig config) {
         this.plugin = plugin;
         this.coordinator = coordinator;
         this.config = config;
+        this.matcher = new CommandMatcher(config.commandPatterns());
     }
 
     public void updateConfig(RiskConfig config) {
+        this.matcher = new CommandMatcher(config.commandPatterns());
         this.config = config;
     }
 
@@ -44,10 +48,7 @@ public final class CommandInterceptionListener implements Listener {
             return;
         }
         RiskConfig current = this.config;
-        Optional<CommandPattern.Match> matched = current.commandPatterns().stream()
-            .map(pattern -> pattern.match(event.getMessage()))
-            .flatMap(Optional::stream)
-            .findFirst();
+        Optional<CommandPattern.Match> matched = this.matcher.match(event.getMessage());
         if (matched.isEmpty()) {
             return;
         }

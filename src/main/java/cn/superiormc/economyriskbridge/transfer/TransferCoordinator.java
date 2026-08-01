@@ -128,9 +128,17 @@ public final class TransferCoordinator {
             return PrecheckResult.ignore();
         }
 
+        this.plugin.refreshIdentity(sender);
+        Player onlineReceiver = Bukkit.getPlayer(receiverId);
+        if (onlineReceiver != null) {
+            this.plugin.refreshIdentity(onlineReceiver);
+        }
         long now = System.currentTimeMillis();
-        PartyProfile senderProfile = this.identities.profile(sender.getUniqueId(), sender.getName(), now);
-        PartyProfile receiverProfile = this.identities.profile(receiverId, receiverName, now);
+        int linkedAccountLimit = Math.max(0, current.profiling().ipClusterAccounts() - 1);
+        PartyProfile senderProfile = this.identities.profile(sender.getUniqueId(), sender.getName(), now,
+            linkedAccountLimit);
+        PartyProfile receiverProfile = this.identities.profile(receiverId, receiverName, now,
+            linkedAccountLimit);
         TransferAttempt attempt = new TransferAttempt(UUID.randomUUID(), senderProfile, receiverProfile,
             currency.getId().toLowerCase(Locale.ROOT), amount, Money.fromDouble(balance), now,
             this.identities.shareRecentIp(sender.getUniqueId(), receiverId, now),

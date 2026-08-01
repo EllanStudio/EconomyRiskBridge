@@ -10,6 +10,7 @@ class CommandPatternTest {
     @Test
     void matchesAliasesCaseInsensitivelyAndPreventsExtraArguments() {
         CommandPattern pattern = new CommandPattern("money pay {target} {amount}", "Money");
+        assertEquals("money", pattern.rootCommand());
         CommandPattern.Match match = pattern.match("/MONEY PAY Alice 2.5k").orElseThrow();
 
         assertEquals("Alice", match.targetName());

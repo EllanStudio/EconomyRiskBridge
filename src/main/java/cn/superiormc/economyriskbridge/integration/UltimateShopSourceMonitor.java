@@ -34,6 +34,7 @@ public final class UltimateShopSourceMonitor {
     private final Map<SourceKey, SourceState> states = new HashMap<>();
     private final Set<ClusterDay> violatedClusters = new HashSet<>();
     private final AtomicLong lastQueueWarning = new AtomicLong();
+    private long lastPrunedEpochDay = Long.MIN_VALUE;
     private Method getPlayer;
     private Method isBuyOrSell;
     private Method getAmount;
@@ -113,9 +114,13 @@ public final class UltimateShopSourceMonitor {
         if (state.players.size() >= 2 && state.limit > 0L && state.units > state.limit) {
             this.violatedClusters.add(new ClusterDay(record.epochDay(), record.clusterKey()));
         }
-        long oldestDay = epochDay(System.currentTimeMillis()) - 1L;
-        this.states.keySet().removeIf(existing -> existing.epochDay < oldestDay);
-        this.violatedClusters.removeIf(existing -> existing.epochDay < oldestDay);
+        long currentDay = epochDay(System.currentTimeMillis());
+        if (currentDay != this.lastPrunedEpochDay) {
+            this.lastPrunedEpochDay = currentDay;
+            long oldestDay = currentDay - 1L;
+            this.states.keySet().removeIf(existing -> existing.epochDay < oldestDay);
+            this.violatedClusters.removeIf(existing -> existing.epochDay < oldestDay);
+        }
     }
 
     private int effectiveLimit(Object item, Player player) throws ReflectiveOperationException {

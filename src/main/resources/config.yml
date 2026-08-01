@@ -105,6 +105,14 @@ storage:
   # ENFORCE 下审计队列或数据库失效时是否拒绝新转账。
   fail-closed: true
 
+performance:
+  # 周期画像刷新会分散到多个 tick，避免在线人数较多时在单 tick 集中写入审计队列。
+  identity-refresh-batch-per-tick: 16
+  # 每分钟最多检查多少个长期不活跃画像；完整扫描之间至少间隔一小时。
+  identity-maintenance-batch: 256
+  # 每分钟最多清理多少个过期资金图节点；只影响内存回收，不改变风控窗口。
+  risk-ledger-maintenance-batch: 1024
+
 notifications:
   # 玩家只收到错误代码；拥有管理权限的在线 OP 与控制台收到代码对应的具体原因。
   operator-case-alerts: true

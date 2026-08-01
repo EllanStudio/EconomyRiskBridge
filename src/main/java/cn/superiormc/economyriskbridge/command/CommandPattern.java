@@ -68,6 +68,10 @@ public final class CommandPattern {
         return this.currencyId;
     }
 
+    public String rootCommand() {
+        return this.tokens.length == 0 ? "" : stripNamespace(this.tokens[0]).toLowerCase(Locale.ROOT);
+    }
+
     private static String[] split(String input) {
         if (input.isBlank()) {
             return new String[0];

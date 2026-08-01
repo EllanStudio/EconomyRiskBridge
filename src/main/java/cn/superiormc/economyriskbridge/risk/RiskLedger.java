@@ -9,6 +9,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -22,10 +23,13 @@ public final class RiskLedger {
     private final Map<DailyKey, Long> committed = new HashMap<>();
     private final Map<DailyKey, Long> reserved = new HashMap<>();
     private final Map<UUID, TransferAttempt> reservations = new HashMap<>();
+    private final Map<UUID, Set<UUID>> reservationsByParticipant = new HashMap<>();
     private final Map<UUID, TransferAttempt> bookedTransfers = new HashMap<>();
     private final Map<UUID, ArrayDeque<Flow>> outgoing = new HashMap<>();
     private final Map<UUID, ArrayDeque<Flow>> incoming = new HashMap<>();
+    private final ArrayDeque<UUID> flowMaintenanceQueue = new ArrayDeque<>();
     private long lastPrunedEpochDay = Long.MIN_VALUE;
+    private long nextFlowSweepMillis;
 
     public RiskLedger(ZoneId zoneId) {
         this.zoneId = zoneId;
@@ -86,7 +90,25 @@ public final class RiskLedger {
         circular = hasTwoHopPath(attempt.receiver().uuid(), attempt.sender().uuid(), attempt.currencyId(),
             behaviorCutoff);
 
-        for (TransferAttempt pending : this.reservations.values()) {
+        Set<UUID> senderReservations = this.reservationsByParticipant.getOrDefault(
+            attempt.sender().uuid(), Set.of());
+        Set<UUID> receiverReservations = this.reservationsByParticipant.getOrDefault(
+            attempt.receiver().uuid(), Set.of());
+        Collection<UUID> relevantReservations;
+        if (senderReservations.isEmpty()) {
+            relevantReservations = receiverReservations;
+        } else if (receiverReservations.isEmpty() || senderReservations == receiverReservations) {
+            relevantReservations = senderReservations;
+        } else {
+            Set<UUID> mergedReservations = new HashSet<>(senderReservations);
+            mergedReservations.addAll(receiverReservations);
+            relevantReservations = mergedReservations;
+        }
+        for (UUID transactionId : relevantReservations) {
+            TransferAttempt pending = this.reservations.get(transactionId);
+            if (pending == null) {
+                continue;
+            }
             if (!pending.currencyId().equals(attempt.currencyId())) {
                 continue;
             }
@@ -141,6 +163,8 @@ public final class RiskLedger {
         if (this.reservations.putIfAbsent(attempt.transactionId(), attempt) != null) {
             return;
         }
+        indexReservation(attempt.sender().uuid(), attempt.transactionId());
+        indexReservation(attempt.receiver().uuid(), attempt.transactionId());
         for (DailyKey key : keys(attempt)) {
             add(this.reserved, key, attempt.amountMicros());
         }
@@ -151,6 +175,8 @@ public final class RiskLedger {
         if (attempt == null) {
             return false;
         }
+        removeReservationIndex(attempt.sender().uuid(), transactionId);
+        removeReservationIndex(attempt.receiver().uuid(), transactionId);
         for (DailyKey key : keys(attempt)) {
             add(this.reserved, key, -attempt.amountMicros());
             add(this.committed, key, attempt.amountMicros());
@@ -166,6 +192,8 @@ public final class RiskLedger {
         if (attempt == null) {
             return false;
         }
+        removeReservationIndex(attempt.sender().uuid(), transactionId);
+        removeReservationIndex(attempt.receiver().uuid(), transactionId);
         for (DailyKey key : keys(attempt)) {
             add(this.reserved, key, -attempt.amountMicros());
         }
@@ -213,6 +241,28 @@ public final class RiskLedger {
 
     public synchronized int pendingCount() {
         return this.reservations.size();
+    }
+
+    public synchronized void maintenance(long nowMillis, int behaviorWindowSeconds, int maximumPlayers) {
+        if (maximumPlayers <= 0) {
+            return;
+        }
+        if (this.flowMaintenanceQueue.isEmpty()) {
+            if (nowMillis < this.nextFlowSweepMillis) {
+                return;
+            }
+            this.flowMaintenanceQueue.addAll(this.outgoing.keySet());
+            this.flowMaintenanceQueue.addAll(this.incoming.keySet());
+            this.nextFlowSweepMillis = nowMillis + 3_600_000L;
+        }
+        long cutoff = nowMillis - Math.max(1L, behaviorWindowSeconds) * 1_000L;
+        for (int index = 0; index < maximumPlayers; index++) {
+            UUID playerId = this.flowMaintenanceQueue.pollFirst();
+            if (playerId == null) {
+                break;
+            }
+            pruneFlows(playerId, cutoff);
+        }
     }
 
     private List<DailyKey> keys(TransferAttempt attempt) {
@@ -275,16 +325,20 @@ public final class RiskLedger {
     }
 
     private void pruneFlows(UUID playerId, long cutoff) {
-        prune(this.outgoing.get(playerId), cutoff);
-        prune(this.incoming.get(playerId), cutoff);
+        prune(this.outgoing, playerId, cutoff);
+        prune(this.incoming, playerId, cutoff);
     }
 
-    private static void prune(ArrayDeque<Flow> flows, long cutoff) {
+    private static void prune(Map<UUID, ArrayDeque<Flow>> index, UUID playerId, long cutoff) {
+        ArrayDeque<Flow> flows = index.get(playerId);
         if (flows == null) {
             return;
         }
         while (!flows.isEmpty() && flows.peekFirst().atMillis < cutoff) {
             flows.removeFirst();
+        }
+        if (flows.isEmpty()) {
+            index.remove(playerId, flows);
         }
     }
 
@@ -296,6 +350,22 @@ public final class RiskLedger {
         long oldest = currentEpochDay - 1;
         this.committed.keySet().removeIf(key -> key.epochDay < oldest);
         this.reserved.keySet().removeIf(key -> key.epochDay < oldest);
+        this.bookedTransfers.entrySet().removeIf(entry -> epochDay(entry.getValue().createdAtMillis()) < oldest);
+    }
+
+    private void indexReservation(UUID playerId, UUID transactionId) {
+        this.reservationsByParticipant.computeIfAbsent(playerId, ignored -> new HashSet<>()).add(transactionId);
+    }
+
+    private void removeReservationIndex(UUID playerId, UUID transactionId) {
+        Set<UUID> indexed = this.reservationsByParticipant.get(playerId);
+        if (indexed == null) {
+            return;
+        }
+        indexed.remove(transactionId);
+        if (indexed.isEmpty()) {
+            this.reservationsByParticipant.remove(playerId, indexed);
+        }
     }
 
     private long epochDay(long millis) {

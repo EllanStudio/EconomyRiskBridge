@@ -47,6 +47,39 @@ class RiskLedgerTest {
         assertEquals(0L, ledger.outgoingToday(transfer.sender().uuid(), "money", now));
     }
 
+    @Test
+    void participantIndexKeepsReverseAndPassThroughSignals() {
+        RiskLedger ledger = new RiskLedger(ZoneId.of("UTC"));
+        long now = 1_800_000_000_000L;
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        TransferAttempt incoming = attempt(UUID.randomUUID(), first, second, 25_000_000L, now);
+        ledger.reserve(incoming);
+
+        TransferAttempt reverse = attempt(UUID.randomUUID(), second, first, 10_000_000L, now + 1_000L);
+        CounterSnapshot snapshot = ledger.snapshot(reverse, 60, 600);
+
+        assertTrue(snapshot.reverseFlow());
+        assertEquals(25_000_000L, snapshot.senderRecentIncoming());
+        assertEquals(25_000_000L, snapshot.receiverRecentOutgoing());
+    }
+
+    @Test
+    void unrelatedReservationsAreExcludedFromSnapshot() {
+        RiskLedger ledger = new RiskLedger(ZoneId.of("UTC"));
+        long now = 1_800_000_000_000L;
+        ledger.reserve(attempt(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 50_000_000L, now));
+
+        TransferAttempt unrelated = attempt(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+            10_000_000L, now + 1_000L);
+        CounterSnapshot snapshot = ledger.snapshot(unrelated, 60, 600);
+
+        assertEquals(0L, snapshot.senderDaily());
+        assertEquals(0, snapshot.velocityCount());
+        assertEquals(0L, snapshot.senderRecentIncoming());
+        assertEquals(0L, snapshot.receiverRecentOutgoing());
+    }
+
     private static TransferAttempt attempt(UUID transactionId, UUID sender, UUID receiver, long amount, long now) {
         PartyProfile from = new PartyProfile(sender, "Sender", now - 100_000L, now - 10_000L,
             10_000L, "ip:one", "one", 1, 0);

@@ -4,6 +4,7 @@ import cn.superiormc.economyriskbridge.model.BalanceEntry;
 import org.bukkit.plugin.Plugin;
 
 import java.util.IdentityHashMap;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -15,29 +16,34 @@ public final class SourceDetector {
         "excellenteconomy", "economyriskbridge", "vault", "nightcore", "cmilib"
     );
 
-    private final Map<ClassLoader, String> pluginByClassLoader;
+    private final Map<ClassLoader, Attribution> attributionByClassLoader;
 
     public SourceDetector(Plugin[] plugins) {
-        Map<ClassLoader, String> mapped = new IdentityHashMap<>();
+        Map<ClassLoader, Attribution> mapped = new IdentityHashMap<>();
         for (Plugin plugin : plugins) {
-            mapped.put(plugin.getClass().getClassLoader(), plugin.getName());
+            String pluginName = plugin.getName();
+            if (BRIDGES.contains(pluginName.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            mapped.put(plugin.getClass().getClassLoader(), new Attribution(
+                SourceCatalog.fromPlugin(pluginName), BalanceEntry.Confidence.INFERRED,
+                "调用栈归因插件：" + pluginName
+            ));
         }
-        this.pluginByClassLoader = Map.copyOf(mapped);
+        this.attributionByClassLoader = Collections.unmodifiableMap(mapped);
     }
 
     public Attribution detect() {
-        String pluginName = WALKER.walk(frames -> frames
-            .map(frame -> this.pluginByClassLoader.get(frame.getDeclaringClass().getClassLoader()))
-            .filter(name -> name != null && !BRIDGES.contains(name.toLowerCase(Locale.ROOT)))
+        Attribution attribution = WALKER.walk(frames -> frames
+            .map(frame -> this.attributionByClassLoader.get(frame.getDeclaringClass().getClassLoader()))
+            .filter(java.util.Objects::nonNull)
             .findFirst()
-            .orElse(""));
-        if (pluginName.isEmpty()) {
+            .orElse(null));
+        if (attribution == null) {
             return new Attribution(SourceCatalog.UNKNOWN_EXTERNAL, BalanceEntry.Confidence.UNKNOWN,
                 "ExcellentEconomy/控制台/未知 API；请结合 operations.log 核对");
         }
-        SourceCatalog source = SourceCatalog.fromPlugin(pluginName);
-        return new Attribution(source, BalanceEntry.Confidence.INFERRED,
-            "调用栈归因插件：" + pluginName);
+        return attribution;
     }
 
     public record Attribution(SourceCatalog source, BalanceEntry.Confidence confidence, String detail) {

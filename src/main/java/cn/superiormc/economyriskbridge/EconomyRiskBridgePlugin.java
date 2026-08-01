@@ -25,8 +25,11 @@ import org.bukkit.plugin.java.JavaPlugin;
 import su.nightexpress.excellenteconomy.api.ExcellentEconomyAPI;
 
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -44,6 +47,9 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
     private IdentityListener identityListener;
     private UltimateShopSourceMonitor shopSourceMonitor;
     private final ConcurrentHashMap<UUID, Long> transferNotices = new ConcurrentHashMap<>();
+    private final ArrayDeque<UUID> identityRefreshQueue = new ArrayDeque<>();
+    private final Set<UUID> queuedIdentityRefresh = new HashSet<>();
+    private int identityRefreshBatchSize;
 
     @Override
     public void onEnable() {
@@ -52,6 +58,8 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
 
         try {
             this.riskConfig = RiskConfig.load(this.getConfig());
+            this.identityRefreshBatchSize = boundedPerformanceSetting(
+                "performance.identity-refresh-batch-per-tick", 16, 1, 256);
         } catch (RuntimeException exception) {
             this.getLogger().log(java.util.logging.Level.SEVERE, "Invalid EconomyRiskBridge configuration", exception);
             Bukkit.getPluginManager().disablePlugin(this);
@@ -123,9 +131,10 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
 
         Bukkit.getScheduler().runTaskTimer(this, () -> this.coordinator.expirePending(System.currentTimeMillis()),
             20L, 20L);
-        Bukkit.getScheduler().runTaskTimer(this, () -> Bukkit.getOnlinePlayers().forEach(this.identityListener::refresh),
-            20L, 2_400L);
-        Bukkit.getOnlinePlayers().forEach(this.identityListener::refresh);
+        Bukkit.getScheduler().runTaskTimer(this, this::drainIdentityRefreshQueue, 1L, 1L);
+        Bukkit.getScheduler().runTaskTimer(this, this::queueOnlineIdentityRefresh, 20L, 2_400L);
+        Bukkit.getScheduler().runTaskTimer(this, this::runCacheMaintenance, 1_200L, 1_200L);
+        queueOnlineIdentityRefresh();
 
         this.getLogger().info("Enabled in " + this.riskConfig.mode() + " mode with "
             + this.riskConfig.commandPatterns().size() + " transfer command pattern(s). Node="
@@ -164,6 +173,8 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
             return false;
         }
         this.riskConfig = updated;
+        this.identityRefreshBatchSize = boundedPerformanceSetting(
+            "performance.identity-refresh-batch-per-tick", 16, 1, 256);
         this.coordinator.updateConfig(updated);
         this.commandListener.updateConfig(updated);
         tell(sender, "&a风控规则与转账命令匹配器已重载，当前模式：" + updated.mode());
@@ -188,6 +199,12 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
         }
         this.transferNotices.put(player.getUniqueId(), now);
         tell(player, this.riskConfig.messages().transferNotice());
+    }
+
+    public void refreshIdentity(org.bukkit.entity.Player player) {
+        if (this.identityListener != null) {
+            this.identityListener.refresh(player);
+        }
     }
 
     public void notifyOperators(CaseRecord record) {
@@ -264,5 +281,42 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
         this.getConfig().set("privacy.ip-hmac-secret", Base64.getEncoder().encodeToString(secret));
         this.saveConfig();
         this.getLogger().info("Generated a private HMAC key for pseudonymous IP linking.");
+    }
+
+    private void queueOnlineIdentityRefresh() {
+        for (var player : Bukkit.getOnlinePlayers()) {
+            if (this.queuedIdentityRefresh.add(player.getUniqueId())) {
+                this.identityRefreshQueue.addLast(player.getUniqueId());
+            }
+        }
+    }
+
+    private void drainIdentityRefreshQueue() {
+        for (int index = 0; index < this.identityRefreshBatchSize; index++) {
+            UUID playerId = this.identityRefreshQueue.pollFirst();
+            if (playerId == null) {
+                return;
+            }
+            this.queuedIdentityRefresh.remove(playerId);
+            var player = Bukkit.getPlayer(playerId);
+            if (player != null && player.isOnline()) {
+                this.identityListener.refresh(player);
+            }
+        }
+    }
+
+    private void runCacheMaintenance() {
+        long now = System.currentTimeMillis();
+        int profileBatch = boundedPerformanceSetting("performance.identity-maintenance-batch", 256, 1, 10_000);
+        this.identities.maintenance(now, profileBatch);
+        int ledgerBatch = boundedPerformanceSetting("performance.risk-ledger-maintenance-batch", 1_024, 1, 50_000);
+        this.ledger.maintenance(now, this.riskConfig.profiling().behaviorWindowSeconds(), ledgerBatch);
+        int cooldownHours = this.riskConfig.messages().noticeCooldownHours();
+        long cutoff = now - Math.max(1L, cooldownHours) * 3_600_000L;
+        this.transferNotices.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+    }
+
+    private int boundedPerformanceSetting(String path, int fallback, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(maximum, this.getConfig().getInt(path, fallback)));
     }
 }
