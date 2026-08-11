@@ -12,6 +12,7 @@ repositories {
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
     maven("https://repo.nightexpressdev.com/releases")
+    maven("https://repo.momirealms.net/releases/")
     maven("https://api.modrinth.com/maven")
 }
 
@@ -40,9 +41,12 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.50.3.0") {
         exclude(group = "org.slf4j")
     }
+    implementation("org.ow2.asm:asm:9.9.1")
+    implementation("net.momirealms:sparrow-reflection:0.27")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testCompileOnly("io.papermc.paper:paper-api:26.2.build.55-alpha")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testRuntimeOnly("io.papermc.paper:paper-api:26.2.build.55-alpha")
 }
@@ -52,6 +56,18 @@ tasks.shadowJar {
     archiveVersion.set(project.version.toString())
     archiveClassifier.set("")
     mergeServiceFiles()
+    relocate("net.momirealms.sparrow.reflection", "cn.superiormc.economyriskbridge.lib.sparrow")
+    relocate("org.objectweb.asm", "cn.superiormc.economyriskbridge.lib.asm")
+    from("LICENSE") {
+        into("META-INF")
+        rename { "LICENSE-EconomyRiskBridge.txt" }
+    }
+    from("THIRD_PARTY_NOTICES.md") {
+        into("META-INF")
+    }
+    from("third-party") {
+        into("META-INF/licenses")
+    }
 }
 
 tasks.build {

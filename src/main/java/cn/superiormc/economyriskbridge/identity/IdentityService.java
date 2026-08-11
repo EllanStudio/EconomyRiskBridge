@@ -210,6 +210,36 @@ public final class IdentityService {
             .sorted(Comparator.comparing(PartyProfile::name, String.CASE_INSENSITIVE_ORDER)).toList();
     }
 
+    /**
+     * Returns every account connected to {@code playerId} through one or more recent shared-IP edges.
+     * A and C are therefore related when A shared an IP with B and B shared another IP with C, while
+     * accounts whose retained IP sets are completely disjoint are never returned.
+     */
+    public synchronized Set<UUID> relatedAccountIds(UUID playerId, long nowMillis, int maximum) {
+        if (maximum <= 0) {
+            return Set.of();
+        }
+        ProfileData profile = this.profiles.get(playerId);
+        if (profile == null) {
+            return Set.of();
+        }
+        return Set.copyOf(linkedIds(playerId, profile, nowMillis - this.retentionMillis, maximum));
+    }
+
+    public synchronized boolean hasRecentIpRelation(UUID left, UUID right, long nowMillis, int maximum) {
+        if (left.equals(right)) {
+            return true;
+        }
+        if (maximum <= 0) {
+            return false;
+        }
+        ProfileData profile = this.profiles.get(left);
+        if (profile == null || !this.profiles.containsKey(right)) {
+            return false;
+        }
+        return linkedIds(left, profile, nowMillis - this.retentionMillis, maximum).contains(right);
+    }
+
     public synchronized boolean isTrusted(UUID left, UUID right) {
         return this.trustedPairs.contains(PairKey.of(left, right));
     }
@@ -319,20 +349,35 @@ public final class IdentityService {
             return Set.of();
         }
         Set<UUID> linked = new LinkedHashSet<>();
-        for (var entry : profile.ipLastSeen.entrySet()) {
-            if (entry.getValue() < cutoff) {
+        Set<UUID> visitedPlayers = new HashSet<>();
+        Set<String> visitedIps = new HashSet<>();
+        ArrayDeque<UUID> pendingPlayers = new ArrayDeque<>();
+        visitedPlayers.add(playerId);
+        pendingPlayers.addLast(playerId);
+
+        while (!pendingPlayers.isEmpty()) {
+            UUID currentId = pendingPlayers.removeFirst();
+            ProfileData current = currentId.equals(playerId) ? profile : this.profiles.get(currentId);
+            if (current == null) {
                 continue;
             }
-            for (UUID candidate : this.playersByIp.getOrDefault(entry.getKey(), Set.of())) {
-                if (candidate.equals(playerId)) {
+            for (var entry : current.ipLastSeen.entrySet()) {
+                if (entry.getValue() < cutoff || !visitedIps.add(entry.getKey())) {
                     continue;
                 }
-                ProfileData candidateProfile = this.profiles.get(candidate);
-                if (candidateProfile != null
-                    && candidateProfile.ipLastSeen.getOrDefault(entry.getKey(), 0L) >= cutoff) {
-                    linked.add(candidate);
-                    if (linked.size() >= maximum) {
-                        return linked;
+                for (UUID candidate : this.playersByIp.getOrDefault(entry.getKey(), Set.of())) {
+                    ProfileData candidateProfile = this.profiles.get(candidate);
+                    if (candidateProfile == null
+                        || candidateProfile.ipLastSeen.getOrDefault(entry.getKey(), 0L) < cutoff
+                        || !visitedPlayers.add(candidate)) {
+                        continue;
+                    }
+                    pendingPlayers.addLast(candidate);
+                    if (!candidate.equals(playerId)) {
+                        linked.add(candidate);
+                        if (linked.size() >= maximum) {
+                            return linked;
+                        }
                     }
                 }
             }

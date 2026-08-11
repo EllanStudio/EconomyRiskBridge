@@ -19,6 +19,8 @@ public record RiskConfig(
     int pendingTimeoutSeconds,
     UnknownTargetPolicy unknownTargetPolicy,
     int ipLinkRetentionDays,
+    int ipRelationAccountCap,
+    ShopRisk shopRisk,
     Limits limits,
     Profiling profiling,
     Scores scores,
@@ -133,6 +135,11 @@ public record RiskConfig(
             config.getBoolean("storage.fail-closed", true)
         );
 
+        ShopRisk shopRisk = new ShopRisk(
+            positive(config.getInt("integrations.ultimate-shop.violation-lookback-days", 7),
+                "integrations.ultimate-shop.violation-lookback-days")
+        );
+
         return new RiskConfig(
             enumValue(Mode.class, config.getString("mode", "SHADOW"), Mode.SHADOW),
             ZoneId.of(config.getString("time-zone", "Asia/Shanghai")),
@@ -143,6 +150,9 @@ public record RiskConfig(
             enumValue(UnknownTargetPolicy.class,
                 config.getString("interception.unknown-target-policy", "BLOCK"), UnknownTargetPolicy.BLOCK),
             positive(config.getInt("privacy.ip-link-retention-days", 30), "privacy.ip-link-retention-days"),
+            positive(config.getInt("privacy.ip-relation-account-cap", 256),
+                "privacy.ip-relation-account-cap"),
+            shopRisk,
             limits,
             profiling,
             scores,
@@ -157,7 +167,11 @@ public record RiskConfig(
                 config.getString("messages.audit-unavailable", "&c审计系统繁忙，转账已暂缓。错误代码：ERB-E002"),
                 config.getString("messages.unknown-target", "&c无法安全识别收款玩家。错误代码：ERB-E001"),
                 config.getString("messages.wrong-transfer-node",
-                    "&c请前往 {node} 服务器转账。错误代码：ERB-E005")
+                    "&c请前往 {node} 服务器转账。错误代码：ERB-E005"),
+                config.getString("messages.shop-sale-blocked",
+                    "&c该次出售已暂缓并进入管理员复核。错误代码：ERB-R026 &7(案件 {case})"),
+                config.getString("messages.quickshop-blocked",
+                    "&c该次箱子商店交易已暂缓并进入管理员复核。错误代码：ERB-R027 &7(案件 {case})")
             )
         );
     }
@@ -204,6 +218,9 @@ public record RiskConfig(
     public enum UnknownTargetPolicy {
         BLOCK,
         IGNORE
+    }
+
+    public record ShopRisk(int violationLookbackDays) {
     }
 
     public record Network(boolean singleTransferNode, String currentNode, String transferNode) {
@@ -289,6 +306,7 @@ public record RiskConfig(
 
     public record Messages(String prefix, String transferNotice, int noticeCooldownHours,
                            String blocked, String escrowProcessing, String escrowHeld,
-                           String auditUnavailable, String unknownTarget, String wrongTransferNode) {
+                           String auditUnavailable, String unknownTarget, String wrongTransferNode,
+                           String shopSaleBlocked, String quickShopBlocked) {
     }
 }

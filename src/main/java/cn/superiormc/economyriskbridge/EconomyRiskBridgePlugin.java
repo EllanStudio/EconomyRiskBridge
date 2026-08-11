@@ -9,6 +9,7 @@ import cn.superiormc.economyriskbridge.listener.CommandInterceptionListener;
 import cn.superiormc.economyriskbridge.listener.ExcellentEconomyBalanceListener;
 import cn.superiormc.economyriskbridge.listener.IdentityListener;
 import cn.superiormc.economyriskbridge.listener.OperatorAlertListener;
+import cn.superiormc.economyriskbridge.integration.QuickShopTransactionMonitor;
 import cn.superiormc.economyriskbridge.integration.UltimateShopSourceMonitor;
 import cn.superiormc.economyriskbridge.model.CaseRecord;
 import cn.superiormc.economyriskbridge.persistence.AuditStore;
@@ -17,10 +18,12 @@ import cn.superiormc.economyriskbridge.risk.RiskLedger;
 import cn.superiormc.economyriskbridge.risk.RiskRule;
 import cn.superiormc.economyriskbridge.transfer.TransferCoordinator;
 import cn.superiormc.economyriskbridge.util.Money;
+import net.momirealms.sparrow.reflection.SReflection;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import su.nightexpress.excellenteconomy.api.ExcellentEconomyAPI;
 
@@ -46,6 +49,7 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
     private CommandInterceptionListener commandListener;
     private IdentityListener identityListener;
     private UltimateShopSourceMonitor shopSourceMonitor;
+    private QuickShopTransactionMonitor quickShopMonitor;
     private final ConcurrentHashMap<UUID, Long> transferNotices = new ConcurrentHashMap<>();
     private final ArrayDeque<UUID> identityRefreshQueue = new ArrayDeque<>();
     private final Set<UUID> queuedIdentityRefresh = new HashSet<>();
@@ -53,6 +57,7 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        SReflection.setAsmClassPrefix("EconomyRiskBridge");
         this.saveDefaultConfig();
         ensureIpSecret();
 
@@ -93,7 +98,8 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
             if (this.getConfig().getBoolean("integrations.ultimate-shop.enabled", true)
                 && Bukkit.getPluginManager().isPluginEnabled("UltimateShop")) {
                 this.shopSourceMonitor = new UltimateShopSourceMonitor(this.identities, this.auditStore,
-                    this.getLogger(), this.riskConfig.zoneId(), bootstrap.shopSources());
+                    this.getLogger(), this.riskConfig.zoneId(), bootstrap.shopSources(), bootstrap.cases(),
+                    this.riskConfig, this::openShopSourceCase, this::notifyShopSaleBlocked);
                 try {
                     this.shopSourceMonitor.register(this, Bukkit.getPluginManager().getPlugin("UltimateShop"));
                     this.getLogger().info("UltimateShop source-side alt-limit evidence is enabled.");
@@ -101,6 +107,23 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
                     this.getLogger().log(java.util.logging.Level.WARNING,
                         "UltimateShop integration API is incompatible; source-side evidence is disabled", exception);
                     this.shopSourceMonitor = null;
+                }
+            }
+
+            if (this.getConfig().getBoolean("integrations.quick-shop.enabled", true)
+                && Bukkit.getPluginManager().isPluginEnabled("QuickShop-Hikari")) {
+                this.quickShopMonitor = new QuickShopTransactionMonitor(this.identities, this.getLogger(),
+                    this.riskConfig.zoneId(), bootstrap.cases(), this.riskConfig, this::openQuickShopCase,
+                    this::notifyQuickShopBlocked);
+                try {
+                    this.quickShopMonitor.register(this,
+                        Bukkit.getPluginManager().getPlugin("QuickShop-Hikari"));
+                    this.getLogger().info("QuickShop related-IP transaction evidence is enabled.");
+                } catch (ReflectiveOperationException exception) {
+                    this.getLogger().log(java.util.logging.Level.WARNING,
+                        "QuickShop integration API is incompatible; related-account transaction evidence is disabled",
+                        exception);
+                    this.quickShopMonitor = null;
                 }
             }
 
@@ -177,6 +200,12 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
             "performance.identity-refresh-batch-per-tick", 16, 1, 256);
         this.coordinator.updateConfig(updated);
         this.commandListener.updateConfig(updated);
+        if (this.shopSourceMonitor != null) {
+            this.shopSourceMonitor.updateConfig(updated);
+        }
+        if (this.quickShopMonitor != null) {
+            this.quickShopMonitor.updateConfig(updated);
+        }
         tell(sender, "&a风控规则与转账命令匹配器已重载，当前模式：" + updated.mode());
         return true;
     }
@@ -208,6 +237,10 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
     }
 
     public void notifyOperators(CaseRecord record) {
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(this, () -> notifyOperators(record));
+            return;
+        }
         String summary = operatorCaseSummary(record);
         if (this.getConfig().getBoolean("notifications.operator-case-alerts", true)) {
             var operators = Bukkit.getOnlinePlayers().stream()
@@ -234,9 +267,87 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
                 .map(rule -> rule.code() + " " + rule.operatorReason())
                 .orElse(code + " 未知或旧版原因"))
             .collect(Collectors.joining("；"));
+        if (record.isShopSource()) {
+            return "案件 " + record.caseId().toString().substring(0, 8) + "：来源侧 "
+                + record.senderName() + " 的 IP 关系簇在 " + abbreviate(record.sourceKey(), 48)
+                + " 合计售出 " + record.sourceUnits() + "/" + record.sourceLimit() + "，" + reasons;
+        }
         return "案件 " + record.caseId().toString().substring(0, 8) + "："
             + record.senderName() + " -> " + record.receiverName() + "，"
             + Money.format(record.amountMicros()) + " " + record.currencyId() + "，" + reasons;
+    }
+
+    private UUID openShopSourceCase(UltimateShopSourceMonitor.Violation violation) {
+        boolean hard = this.riskConfig.profiling().shopAltLimitHardBlock();
+        int score = this.riskConfig.scores().shopAltLimit();
+        if (hard) {
+            score = Math.max(score, this.riskConfig.scores().blockThreshold());
+        }
+        CaseRecord.Severity severity = violation.blocked() ? CaseRecord.Severity.CRITICAL
+            : hard ? CaseRecord.Severity.HIGH : CaseRecord.Severity.MEDIUM;
+        String relatedIds = violation.activePlayers().stream().sorted()
+            .map(UUID::toString).collect(Collectors.joining(","));
+        String relatedNames = violation.activePlayers().stream()
+            .map(playerId -> this.identities.profile(playerId, playerId.toString(),
+                violation.createdAtMillis()).name())
+            .sorted(String.CASE_INSENSITIVE_ORDER).collect(Collectors.joining(", "));
+        String action = violation.blocked() ? "来源侧已在发钱前取消出售" : "来源侧已记录成功出售";
+        String note = action + "；IP 关系账户：" + relatedNames;
+        CaseRecord record = CaseRecord.shopSource(UUID.randomUUID(), violation.createdAtMillis(), severity,
+            violation.playerId(), violation.playerName(), violation.sourceKey(), violation.totalUnits(),
+            violation.individualLimit(), score, RiskRule.SHOP_ALT_LIMIT.code(), note, relatedIds);
+        this.caseBook.add(record);
+        if (!this.auditStore.enqueueCase(record)) {
+            this.getLogger().warning("Could not persist UltimateShop source case " + record.caseId() + ".");
+        }
+        notifyOperators(record);
+        return record.caseId();
+    }
+
+    private void notifyShopSaleBlocked(Player player, UUID caseId) {
+        Runnable notification = () -> {
+            String shortCase = caseId == null ? "unknown" : caseId.toString().substring(0, 8);
+            tell(player, this.riskConfig.messages().shopSaleBlocked().replace("{case}", shortCase));
+        };
+        if (Bukkit.isPrimaryThread()) {
+            notification.run();
+        } else {
+            Bukkit.getScheduler().runTask(this, notification);
+        }
+    }
+
+    private UUID openQuickShopCase(QuickShopTransactionMonitor.Violation violation) {
+        int score = Math.max(this.riskConfig.scores().sameRecentIp(),
+            this.riskConfig.scores().reviewThreshold());
+        if (violation.blocked()) {
+            score = Math.max(score, this.riskConfig.scores().blockThreshold());
+        }
+        CaseRecord.Severity severity = violation.blocked()
+            ? CaseRecord.Severity.CRITICAL : CaseRecord.Severity.HIGH;
+        String action = violation.blocked() ? "成交前已取消" : "已由 QuickShop 成功事件确认";
+        String note = action + "；双方存在近期直接或链式匿名 IP 关系，非 /pay 资金路径";
+        CaseRecord record = CaseRecord.quickShop(UUID.randomUUID(), violation.createdAtMillis(), severity,
+            violation.senderId(), violation.senderName(), violation.receiverId(), violation.receiverName(),
+            violation.currencyId(), violation.amountMicros(), score,
+            RiskRule.QUICK_SHOP_RELATED_ACCOUNTS.code(), note);
+        this.caseBook.add(record);
+        if (!this.auditStore.enqueueCase(record)) {
+            this.getLogger().warning("Could not persist QuickShop related-account case " + record.caseId() + ".");
+        }
+        notifyOperators(record);
+        return record.caseId();
+    }
+
+    private void notifyQuickShopBlocked(Player player, UUID caseId) {
+        Runnable notification = () -> {
+            String shortCase = caseId == null ? "unknown" : caseId.toString().substring(0, 8);
+            tell(player, this.riskConfig.messages().quickShopBlocked().replace("{case}", shortCase));
+        };
+        if (Bukkit.isPrimaryThread()) {
+            notification.run();
+        } else {
+            Bukkit.getScheduler().runTask(this, notification);
+        }
     }
 
     public RiskConfig riskConfig() {
@@ -269,6 +380,10 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
 
     public UltimateShopSourceMonitor shopSourceMonitor() {
         return this.shopSourceMonitor;
+    }
+
+    public QuickShopTransactionMonitor quickShopMonitor() {
+        return this.quickShopMonitor;
     }
 
     private void ensureIpSecret() {
@@ -318,5 +433,9 @@ public final class EconomyRiskBridgePlugin extends JavaPlugin {
 
     private int boundedPerformanceSetting(String path, int fallback, int minimum, int maximum) {
         return Math.max(minimum, Math.min(maximum, this.getConfig().getInt(path, fallback)));
+    }
+
+    private static String abbreviate(String value, int maximum) {
+        return value.length() <= maximum ? value : value.substring(0, maximum) + "…";
     }
 }

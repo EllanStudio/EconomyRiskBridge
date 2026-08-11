@@ -64,6 +64,8 @@ class RiskEngineTest {
             15,
             RiskConfig.UnknownTargetPolicy.BLOCK,
             30,
+            256,
+            new RiskConfig.ShopRisk(7),
             new RiskConfig.Limits(
                 1_000_000L * 1_000_000L,
                 2_000_000L * 1_000_000L,
@@ -88,7 +90,7 @@ class RiskEngineTest {
                 25, 25, 20, 25, 15, 5, 40, 80
             ),
             new RiskConfig.Storage("risk.db", 100, 10, 10, 180, true),
-            new RiskConfig.Messages("", "", 24, "", "", "", "", "", "")
+            new RiskConfig.Messages("", "", 24, "", "", "", "", "", "", "", "")
         );
     }
 }
