@@ -14,6 +14,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
@@ -77,6 +81,113 @@ class AuditStoreTest {
         try (AuditStore third = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
             third.start(ZoneId.of("UTC"), 30);
             assertTrue(third.pendingOperatorAlerts(100).get(5, TimeUnit.SECONDS).isEmpty());
+        }
+    }
+
+    @Test
+    void shopSourceCaseMetadataSurvivesRestart() throws Exception {
+        RiskConfig.Storage config = new RiskConfig.Storage("source-cases.db", 100, 20, 10, 180, true);
+        long now = System.currentTimeMillis();
+        UUID playerId = UUID.randomUUID();
+        CaseRecord sourceCase = CaseRecord.shopSource(UUID.randomUUID(), now, CaseRecord.Severity.HIGH,
+            playerId, "AltAccount", "Shop: blocks Product: iron", 130L, 100L, 80,
+            RiskRule.SHOP_ALT_LIMIT.code(), "completed source violation", "AltAccount, MainAccount");
+
+        try (AuditStore first = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            first.start(ZoneId.of("UTC"), 30);
+            assertTrue(first.enqueueCase(sourceCase));
+        }
+
+        try (AuditStore second = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            AuditStore.Bootstrap bootstrap = second.start(ZoneId.of("UTC"), 30);
+            CaseRecord restored = bootstrap.cases().getFirst();
+            assertEquals(CaseRecord.Kind.SHOP_SOURCE, restored.kind());
+            assertEquals(sourceCase.sourceKey(), restored.sourceKey());
+            assertEquals(130L, restored.sourceUnits());
+            assertEquals(100L, restored.sourceLimit());
+            assertEquals("AltAccount, MainAccount", restored.relatedAccounts());
+        }
+    }
+
+    @Test
+    void quickShopCaseKindSurvivesRestart() throws Exception {
+        RiskConfig.Storage config = new RiskConfig.Storage("quickshop-cases.db", 100, 20, 10, 180, true);
+        long now = System.currentTimeMillis();
+        CaseRecord quickShopCase = CaseRecord.quickShop(UUID.randomUUID(), now, CaseRecord.Severity.HIGH,
+            UUID.randomUUID(), "RelatedBuyer", UUID.randomUUID(), "RelatedOwner", "money", 25_000_000L,
+            60, RiskRule.QUICK_SHOP_RELATED_ACCOUNTS.code(), "verified QuickShop path");
+
+        try (AuditStore first = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            first.start(ZoneId.of("UTC"), 30);
+            assertTrue(first.enqueueCase(quickShopCase));
+        }
+
+        try (AuditStore second = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            CaseRecord restored = second.start(ZoneId.of("UTC"), 30).cases().getFirst();
+            assertEquals(CaseRecord.Kind.QUICK_SHOP, restored.kind());
+            assertEquals(quickShopCase.senderId(), restored.senderId());
+            assertEquals(quickShopCase.receiverId(), restored.receiverId());
+            assertEquals(25_000_000L, restored.amountMicros());
+        }
+    }
+
+    @Test
+    void legacyCaseTableIsMigratedWithoutLosingCases() throws Exception {
+        Path database = this.directory.resolve("legacy-cases.db");
+        UUID caseId = UUID.randomUUID();
+        UUID transactionId = UUID.randomUUID();
+        UUID senderId = UUID.randomUUID();
+        UUID receiverId = UUID.randomUUID();
+        long now = System.currentTimeMillis();
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.toAbsolutePath());
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                CREATE TABLE erb_cases (
+                    case_id TEXT PRIMARY KEY,
+                    tx_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    severity TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    sender_uuid TEXT NOT NULL,
+                    sender_name TEXT NOT NULL,
+                    receiver_uuid TEXT NOT NULL,
+                    receiver_name TEXT NOT NULL,
+                    currency_id TEXT NOT NULL,
+                    amount_micros INTEGER NOT NULL,
+                    risk_score INTEGER NOT NULL,
+                    reason_codes TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    reviewer TEXT NOT NULL
+                )
+                """);
+            try (PreparedStatement insert = connection.prepareStatement("""
+                INSERT INTO erb_cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+                insert.setString(1, caseId.toString());
+                insert.setString(2, transactionId.toString());
+                insert.setLong(3, now);
+                insert.setString(4, CaseRecord.Severity.HIGH.name());
+                insert.setString(5, CaseRecord.Status.OPEN.name());
+                insert.setString(6, senderId.toString());
+                insert.setString(7, "LegacySender");
+                insert.setString(8, receiverId.toString());
+                insert.setString(9, "LegacyReceiver");
+                insert.setString(10, "money");
+                insert.setLong(11, 10_000_000L);
+                insert.setInt(12, 50);
+                insert.setString(13, RiskRule.SAME_RECENT_IP.code());
+                insert.setString(14, "legacy case");
+                insert.setString(15, "");
+                insert.executeUpdate();
+            }
+        }
+
+        RiskConfig.Storage config = new RiskConfig.Storage("legacy-cases.db", 100, 20, 10, 180, true);
+        try (AuditStore store = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            CaseRecord restored = store.start(ZoneId.of("UTC"), 30).cases().getFirst();
+            assertEquals(caseId, restored.caseId());
+            assertEquals(CaseRecord.Kind.TRANSFER, restored.kind());
+            assertTrue(restored.sourceKey().isEmpty());
         }
     }
 

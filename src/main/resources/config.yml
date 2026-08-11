@@ -15,8 +15,14 @@ network:
 
 integrations:
   ultimate-shop:
-    # 只被动记录卖出完成事件，作为之后审计 /pay 的证据。
-    # 不取消卖出、不限制赚钱、不修改 UltimateShop 本体。
+    # 按近期匿名 IP 关系图动态汇总关联账号；完全没有 IP 联系的账号不会合并计算。
+    # A 与 B 同过一个 IP、B 与 C 同过另一个 IP 时，A/B/C 视为同一风险关系簇。
+    enabled: true
+    # 来源侧案件在此期限内继续作为后续 /pay 的资金来源风险证据。
+    violation-lookback-days: 7
+  quick-shop:
+    # 只在交易双方存在近期直接或链式 IP 关系时建立 ERB-R027 案件；IP 图完全不相交时忽略。
+    # ENFORCE 且 limits.same-ip-hard-block=true 时在成交前取消，否则仅记录成功交易并告警。
     enabled: true
 
 interception:
@@ -34,6 +40,8 @@ privacy:
   # 留空时首次启动自动生成。切勿随意更换，否则历史 IP 关联会失效。
   ip-hmac-secret: ""
   ip-link-retention-days: 30
+  # /pay、UltimateShop 与 QuickShop 共用；防止大型共享网络或错误代理转发造成无界图遍历。
+  ip-relation-account-cap: 256
 
 limits:
   # 统一采用最多 6 位小数；0 表示关闭该项。
@@ -43,6 +51,7 @@ limits:
   pair-daily: "100000"
   cluster-daily: "300000"
   cluster-daily-hard-block: false
+  # 同时控制 /pay 与 QuickShop 的直接/链式 IP 关系交易预拦截。
   same-ip-hard-block: false
   velocity-window-seconds: 60
   velocity-max-transfers: 8
@@ -56,8 +65,10 @@ profiling:
   probation-large-transfer: "25000"
   base-earned-capacity: "10000"
   earned-capacity-per-play-hour: "5000"
-  # 这里的 hard-block 仅表示之后发起的高风险 /pay 进入托管，绝不拦截赚钱入账。
+  # 资金能力 hard-block 仍只影响之后发起的 /pay。
   source-of-funds-hard-block: true
+  # ENFORCE 下，IP 关系簇合计超过单人商品额度时，在 UltimateShop 发钱前取消该次出售。
+  # SHADOW 下只建立来源案件并告警，不取消出售。
   shop-alt-limit-hard-block: true
   dormant-days: 14
   dormant-large-transfer: "25000"
@@ -128,3 +139,5 @@ messages:
   audit-unavailable: "&c审计系统繁忙，转账已暂缓。错误代码：ERB-E002"
   unknown-target: "&c无法安全识别收款玩家。错误代码：ERB-E001"
   wrong-transfer-node: "&c请前往 {node} 服务器转账。错误代码：ERB-E005"
+  shop-sale-blocked: "&c该次出售已暂缓并进入管理员复核。错误代码：ERB-R026 &7(案件 {case})"
+  quickshop-blocked: "&c该次箱子商店交易已暂缓并进入管理员复核。错误代码：ERB-R027 &7(案件 {case})"

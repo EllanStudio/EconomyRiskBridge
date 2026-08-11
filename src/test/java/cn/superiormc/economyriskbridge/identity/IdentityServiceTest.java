@@ -9,10 +9,12 @@ import java.net.InetAddress;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.Base64;
+import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class IdentityServiceTest {
@@ -55,6 +57,59 @@ class IdentityServiceTest {
 
             assertEquals(1, identities.profile(playerId, "Primary", now, 1).linkedAccountCount());
             assertEquals(2, identities.profile(playerId, "Primary", now, 10).linkedAccountCount());
+        }
+    }
+
+    @Test
+    void relatedAccountsFollowTransitiveRecentIpLinksButExcludeDisjointIps() throws Exception {
+        RiskConfig.Storage config = new RiskConfig.Storage("audit.db", 100, 20, 10, 180, true);
+        try (AuditStore store = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            AuditStore.Bootstrap bootstrap = store.start(ZoneId.of("UTC"), 30);
+            String secret = Base64.getEncoder().encodeToString(new byte[32]);
+            IdentityService identities = new IdentityService(secret, 30, store, Logger.getAnonymousLogger());
+            identities.bootstrap(bootstrap);
+            long now = System.currentTimeMillis();
+            UUID first = UUID.randomUUID();
+            UUID bridge = UUID.randomUUID();
+            UUID transitive = UUID.randomUUID();
+            UUID unrelated = UUID.randomUUID();
+            InetAddress firstIp = InetAddress.getByName("192.0.2.10");
+            InetAddress secondIp = InetAddress.getByName("198.51.100.20");
+
+            identities.observe(first, "First", firstIp, now);
+            identities.observe(bridge, "Bridge", firstIp, now);
+            identities.observe(bridge, "Bridge", secondIp, now);
+            identities.observe(transitive, "Transitive", secondIp, now);
+            identities.observe(unrelated, "Unrelated", InetAddress.getByName("203.0.113.30"), now);
+
+            Set<UUID> related = identities.relatedAccountIds(first, now, 10);
+            assertEquals(Set.of(bridge, transitive), related);
+            assertFalse(related.contains(unrelated));
+            assertFalse(identities.shareRecentIp(first, transitive, now));
+            assertTrue(identities.hasRecentIpRelation(first, transitive, now, 10));
+            assertFalse(identities.hasRecentIpRelation(first, unrelated, now, 10));
+        }
+    }
+
+    @Test
+    void expiredSharedIpDoesNotCreateARelationship() throws Exception {
+        RiskConfig.Storage config = new RiskConfig.Storage("audit.db", 100, 20, 10, 180, true);
+        try (AuditStore store = new AuditStore(this.directory, config, Logger.getAnonymousLogger())) {
+            AuditStore.Bootstrap bootstrap = store.start(ZoneId.of("UTC"), 30);
+            String secret = Base64.getEncoder().encodeToString(new byte[32]);
+            IdentityService identities = new IdentityService(secret, 30, store, Logger.getAnonymousLogger());
+            identities.bootstrap(bootstrap);
+            long now = System.currentTimeMillis();
+            long expired = now - 31L * 86_400_000L;
+            UUID first = UUID.randomUUID();
+            UUID second = UUID.randomUUID();
+            InetAddress oldSharedIp = InetAddress.getByName("192.0.2.40");
+
+            identities.observe(first, "First", oldSharedIp, expired);
+            identities.observe(second, "Second", oldSharedIp, expired);
+
+            assertTrue(identities.relatedAccountIds(first, now, 10).isEmpty());
+            assertFalse(identities.shareRecentIp(first, second, now));
         }
     }
 }

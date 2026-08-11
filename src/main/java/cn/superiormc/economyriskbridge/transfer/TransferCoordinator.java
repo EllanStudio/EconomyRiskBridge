@@ -141,10 +141,11 @@ public final class TransferCoordinator {
             linkedAccountLimit);
         TransferAttempt attempt = new TransferAttempt(UUID.randomUUID(), senderProfile, receiverProfile,
             currency.getId().toLowerCase(Locale.ROOT), amount, Money.fromDouble(balance), now,
-            this.identities.shareRecentIp(sender.getUniqueId(), receiverId, now),
+            this.identities.hasRecentIpRelation(sender.getUniqueId(), receiverId, now,
+                current.ipRelationAccountCap()),
             this.identities.isTrusted(sender.getUniqueId(), receiverId),
-            this.shopSourceMonitor != null && (this.shopSourceMonitor.hasViolation(senderProfile.clusterKey(), now)
-                || this.shopSourceMonitor.hasViolation(receiverProfile.clusterKey(), now)));
+            this.shopSourceMonitor != null && (this.shopSourceMonitor.hasViolation(senderProfile.uuid(), now)
+                || this.shopSourceMonitor.hasViolation(receiverProfile.uuid(), now)));
 
         CounterSnapshot snapshot = this.ledger.snapshot(attempt, current.limits().velocityWindowSeconds(),
             current.profiling().behaviorWindowSeconds());

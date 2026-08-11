@@ -11,6 +11,7 @@ import cn.superiormc.economyriskbridge.model.ShopSourceRecord;
 import cn.superiormc.economyriskbridge.model.TransferAttempt;
 import cn.superiormc.economyriskbridge.model.TransferState;
 import cn.superiormc.economyriskbridge.provenance.SourceCatalog;
+import net.momirealms.sparrow.reflection.clazz.SparrowClass;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,7 +63,9 @@ public final class AuditStore implements AutoCloseable {
 
     public Bootstrap start(ZoneId zoneId, int identityRetentionDays) throws Exception {
         Files.createDirectories(this.databasePath.getParent());
-        Class.forName("org.sqlite.JDBC");
+        if (SparrowClass.findNoRemap("org.sqlite.JDBC") == null) {
+            throw new ClassNotFoundException("org.sqlite.JDBC");
+        }
         try (Connection connection = open()) {
             initialise(connection);
             cleanup(connection, identityRetentionDays);
@@ -393,7 +396,12 @@ public final class AuditStore implements AutoCloseable {
                     risk_score INTEGER NOT NULL,
                     reason_codes TEXT NOT NULL,
                     note TEXT NOT NULL,
-                    reviewer TEXT NOT NULL
+                    reviewer TEXT NOT NULL,
+                    case_kind TEXT NOT NULL DEFAULT 'TRANSFER',
+                    source_key TEXT NOT NULL DEFAULT '',
+                    source_units INTEGER NOT NULL DEFAULT 0,
+                    source_limit INTEGER NOT NULL DEFAULT 0,
+                    related_accounts TEXT NOT NULL DEFAULT ''
                 )
                 """);
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS erb_case_status_time ON erb_cases(status, created_at)");
@@ -492,6 +500,30 @@ public final class AuditStore implements AutoCloseable {
                 CREATE INDEX IF NOT EXISTS erb_shop_source_day_cluster
                 ON erb_shop_source_events(epoch_day, cluster_key, source_key)
                 """);
+        }
+        ensureColumn(connection, "erb_cases", "case_kind", "TEXT NOT NULL DEFAULT 'TRANSFER'");
+        ensureColumn(connection, "erb_cases", "source_key", "TEXT NOT NULL DEFAULT ''");
+        ensureColumn(connection, "erb_cases", "source_units", "INTEGER NOT NULL DEFAULT 0");
+        ensureColumn(connection, "erb_cases", "source_limit", "INTEGER NOT NULL DEFAULT 0");
+        ensureColumn(connection, "erb_cases", "related_accounts", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    private static void ensureColumn(Connection connection, String table, String column, String definition)
+        throws SQLException {
+        boolean exists = false;
+        try (Statement statement = connection.createStatement();
+             ResultSet columns = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (columns.next()) {
+                if (column.equalsIgnoreCase(columns.getString("name"))) {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+        if (!exists) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+            }
         }
     }
 
@@ -594,7 +626,8 @@ public final class AuditStore implements AutoCloseable {
             try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT case_id, tx_id, created_at, severity, status, sender_uuid, sender_name,
                        receiver_uuid, receiver_name, currency_id, amount_micros, risk_score,
-                       reason_codes, note, reviewer
+                       reason_codes, note, reviewer, case_kind, source_key, source_units, source_limit,
+                       related_accounts
                 FROM erb_cases ORDER BY created_at DESC LIMIT 2000
                 """)) {
                 try (ResultSet result = statement.executeQuery()) {
@@ -644,11 +677,18 @@ public final class AuditStore implements AutoCloseable {
     }
 
     private static CaseRecord readCase(ResultSet result) throws SQLException {
+        CaseRecord.Kind kind;
+        try {
+            kind = CaseRecord.Kind.valueOf(result.getString(16));
+        } catch (IllegalArgumentException | NullPointerException exception) {
+            kind = CaseRecord.Kind.TRANSFER;
+        }
         return new CaseRecord(UUID.fromString(result.getString(1)), UUID.fromString(result.getString(2)),
             result.getLong(3), CaseRecord.Severity.valueOf(result.getString(4)),
             CaseRecord.Status.valueOf(result.getString(5)), UUID.fromString(result.getString(6)),
             result.getString(7), UUID.fromString(result.getString(8)), result.getString(9), result.getString(10),
-            result.getLong(11), result.getInt(12), result.getString(13), result.getString(14), result.getString(15));
+            result.getLong(11), result.getInt(12), result.getString(13), result.getString(14), result.getString(15),
+            kind, result.getString(17), result.getLong(18), result.getLong(19), result.getString(20));
     }
 
     private static BalanceEntry readBalanceEntry(ResultSet result) throws SQLException {
@@ -871,8 +911,9 @@ public final class AuditStore implements AutoCloseable {
                 INSERT INTO erb_cases (
                     case_id, tx_id, created_at, severity, status, sender_uuid, sender_name,
                     receiver_uuid, receiver_name, currency_id, amount_micros, risk_score,
-                    reason_codes, note, reviewer
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reason_codes, note, reviewer, case_kind, source_key, source_units, source_limit,
+                    related_accounts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(case_id) DO NOTHING
                 """);
             this.caseStatus = connection.prepareStatement(
@@ -1010,6 +1051,11 @@ public final class AuditStore implements AutoCloseable {
             this.caseInsert.setString(13, record.reasonCodes());
             this.caseInsert.setString(14, record.note());
             this.caseInsert.setString(15, record.reviewer());
+            this.caseInsert.setString(16, record.kind().name());
+            this.caseInsert.setString(17, record.sourceKey());
+            this.caseInsert.setLong(18, record.sourceUnits());
+            this.caseInsert.setLong(19, record.sourceLimit());
+            this.caseInsert.setString(20, record.relatedAccounts());
             this.caseInsert.executeUpdate();
         }
 

@@ -100,6 +100,13 @@ public final class AdminCommand implements CommandExecutor, TabCompleter {
         this.plugin.tell(sender, "&e当前节点：&f" + network.currentNode()
             + " &e转账节点：&f" + network.transferNode()
             + " &e本节点可转账：" + (network.acceptsTransfers() ? "&a是" : "&c否"));
+        if (this.plugin.shopSourceMonitor() != null) {
+            this.plugin.tell(sender, "&eUltimateShop 来源审计：&a启用 &e预交易拦截 API："
+                + (this.plugin.shopSourceMonitor().preEnforcementAvailable() ? "&a可用" : "&c不可用"));
+        }
+        if (this.plugin.quickShopMonitor() != null) {
+            this.plugin.tell(sender, "&eQuickShop IP 关联交易审计：&a启用");
+        }
         if (!store.isHealthy()) {
             this.plugin.tell(sender, "&c最近错误：" + store.lastError());
         }
@@ -129,7 +136,11 @@ public final class AdminCommand implements CommandExecutor, TabCompleter {
         List<PartyProfile> linked = this.plugin.identities().linkedAccounts(profile.uuid(), now);
         String names = linked.isEmpty() ? "无" : linked.stream().limit(12).map(PartyProfile::name)
             .collect(Collectors.joining(", "));
-        this.plugin.tell(sender, "&e近期同网络账户（仅风险信号）：&f" + names);
+        this.plugin.tell(sender, "&e近期 IP 关系账户（含链式关联，仅风险信号）：&f" + names);
+        if (this.plugin.shopSourceMonitor() != null) {
+            boolean sourceViolation = this.plugin.shopSourceMonitor().hasViolation(profile.uuid(), now);
+            this.plugin.tell(sender, "&e近期系统商店关联组超限案件：&f" + (sourceViolation ? "有" : "无"));
+        }
     }
 
     private void statement(CommandSender sender, String[] args) {
@@ -206,6 +217,13 @@ public final class AdminCommand implements CommandExecutor, TabCompleter {
             return;
         }
         for (CaseRecord record : records) {
+            if (record.isShopSource()) {
+                this.plugin.tell(sender, "&7" + shortId(record.caseId()) + " &f来源侧 " + record.senderName()
+                    + " &e" + abbreviate(record.sourceKey(), 36) + " &f" + record.sourceUnits() + "/"
+                    + record.sourceLimit() + " &c" + record.score() + " &7" + record.status() + " "
+                    + record.reasonCodes());
+                continue;
+            }
             String escrow = this.plugin.escrowBook().findByPrefix(record.caseId().toString())
                 .map(value -> "/" + value.status()).orElse("");
             this.plugin.tell(sender, "&7" + shortId(record.caseId()) + " &f" + record.senderName() + " -> "
@@ -226,9 +244,16 @@ public final class AdminCommand implements CommandExecutor, TabCompleter {
                 return;
             }
             CaseRecord record = found.get();
-            this.plugin.tell(sender, "&e案件 " + shortId(record.caseId()) + "：&f" + record.senderName()
-                + " -> " + record.receiverName() + "，" + Money.format(record.amountMicros()) + " "
-                + record.currencyId() + "，分数 " + record.score());
+            if (record.isShopSource()) {
+                this.plugin.tell(sender, "&e案件 " + shortId(record.caseId()) + "：&f来源侧 "
+                    + record.senderName() + "，商品 " + record.sourceKey() + "，关联组售出 "
+                    + record.sourceUnits() + "/" + record.sourceLimit() + "，分数 " + record.score());
+                this.plugin.tell(sender, "&e关联账户 UUID：&f" + record.relatedAccounts());
+            } else {
+                this.plugin.tell(sender, "&e案件 " + shortId(record.caseId()) + "：&f" + record.senderName()
+                    + " -> " + record.receiverName() + "，" + Money.format(record.amountMicros()) + " "
+                    + record.currencyId() + "，分数 " + record.score());
+            }
             for (String code : record.reasonCodes().split(",")) {
                 RiskRule.byCode(code).ifPresentOrElse(
                     rule -> this.plugin.tell(sender, "&c" + rule.code() + " &7[" + rule.category() + "] &f"
