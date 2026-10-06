@@ -2,6 +2,8 @@
 
 EconomyRiskBridge 是一个独立的 Paper/Spigot 插件，用来给 ExcellentEconomy 的玩家转账、UltimateShop 系统商店产币和 QuickShop-Hikari 玩家商店增加实时风控、匿名关联账户分析、服务器银行托管和可审计的管理员处置流程。它不会修改这些上游插件的源码。
 
+本分支以 Paper API `26.3.build.157-beta`、Java 25 编译；Spigot/Paper 运行时能力仍以实际安装的上游插件 API 为准。
+
 > 这是一套游戏经济反滥用系统，不是现实金融机构的 AML/KYC 合规产品。“洗钱”在玩家提示中表示游戏币的分层、归集、回流与绕限行为。
 
 风控执行边界包括配置匹配到的玩家 `/pay`，以及两个具有明确上游事件的可选桥接入口：UltimateShop 和 QuickShop-Hikari。其他任务、在线奖励、比赛、掉落、管理员奖励等赚钱行为仍只写入来源流水，不会被本插件取消、限额或回滚。来源异常不会直接扣除既有余额；现有资金只能由管理员结合日志人工处置。
