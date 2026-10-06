@@ -1,7 +1,7 @@
 name: EconomyRiskBridge
 version: '${revision}'
 main: cn.superiormc.economyriskbridge.EconomyRiskBridgePlugin
-api-version: '1.21'
+api-version: '26.3'
 authors: [SuperiorMC]
 description: High-performance, explainable transfer risk bridge for ExcellentEconomy.
 depend: [ExcellentEconomy]

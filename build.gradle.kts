@@ -18,7 +18,7 @@ repositories {
 
 configurations.configureEach {
     if (isCanBeResolved) {
-        // Paper 26.2 and ExcellentEconomy 2.8 publish Java 25 metadata.
+        // Paper 26.3 and ExcellentEconomy 2.8 publish Java 25 metadata.
         attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
     }
 }
@@ -31,11 +31,11 @@ java {
 
 tasks.withType<JavaCompile> {
     options.encoding = "UTF-8"
-    options.release.set(21)
+    options.release.set(25)
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.2.build.55-alpha")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.157-beta")
     compileOnly("su.nightexpress.excellenteconomy:ExcellentEconomy:2.8.0")
     compileOnly("maven.modrinth:nightcore:2.15.1")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0") {
@@ -46,9 +46,9 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
-    testCompileOnly("io.papermc.paper:paper-api:26.2.build.55-alpha")
+    testCompileOnly("io.papermc.paper:paper-api:26.3.build.157-beta")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testRuntimeOnly("io.papermc.paper:paper-api:26.2.build.55-alpha")
+    testRuntimeOnly("io.papermc.paper:paper-api:26.3.build.157-beta")
 }
 
 tasks.shadowJar {
